@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Client-side fast-fail (convenience, bypassable with --no-verify).
+# Server-side pre-receive and CI repeat these checks; they are the enforcement.
+set -euo pipefail
+export PATH=/opt/scanners/bin:$PATH
+if [[ "$(git config --bool commit.gpgsign || echo false)" != "true" ]]; then
+  echo "pre-commit: commit.gpgsign is not enabled — unsigned commits are rejected by the remote." >&2
+  echo "            run: git config commit.gpgsign true && git config user.signingkey <FPR>" >&2
+  exit 1
+fi
+cfg=(); [[ -f .gitleaks.toml ]] && cfg=(--config .gitleaks.toml)
+if ! gitleaks git --pre-commit --staged --redact --no-banner "${cfg[@]}" .; then
+  echo "pre-commit: Gitleaks found a credential in staged changes. Remove it, and if it was real, REVOKE and ROTATE it." >&2
+  exit 1
+fi

@@ -1,0 +1,6 @@
+# Gitleaks policy (Tier 0). Read from the protected base branch by the gate.
+title = "eegr580"
+[extend]
+useDefault = true
+# Allowlist changes require security review. Never allowlist a real credential:
+# revoke and rotate it instead (see the incident runbook).

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Protected mock remote — server-side enforcement (/srv/git/app.git/hooks/pre-receive).
+# Installed from the image (/opt/lab), not from the repository, so pushes cannot alter it.
+#   * every new commit: Tier 0 (signature + allow-list + Gitleaks), policy from current main
+#   * refs/heads/main: fast-forward only, no deletion, and a signed CI pass record
+#     from the labci identity for the exact new head commit
+# Every decision is appended to a hash-chained audit log.
+set -uo pipefail
+export PATH=/opt/scanners/bin:/opt/lab/scripts/bin:$PATH
+AUDIT=/var/log/lab-audit/push.log
+STATUS_DIR=/srv/git/ci-status
+ZERO=0000000000000000000000000000000000000000
+REPORT_DIR="$(mktemp -d)"; export REPORT_DIR
+trap 'rm -rf "$REPORT_DIR"' EXIT
+
+audit() { # ref old new decision reason
+  local prev; prev="$(tail -n1 "$AUDIT" 2>/dev/null | sha256sum | cut -d' ' -f1)"
+  jq -cn --arg ts "$(date -u +%FT%T.%3NZ)" --arg user "$(id -un)" --arg ref "$1" \
+     --arg old "$2" --arg new "$3" --arg decision "$4" --arg reason "$5" --arg prev "$prev" \
+     --slurpfile sigs <(cat "$REPORT_DIR"/tier0-signatures.jsonl 2>/dev/null | jq -s . || echo '[]') \
+     '{ts:$ts,user:$user,ref:$ref,old:$old,new:$new,decision:$decision,reason:$reason,
+       signatures:($sigs[0] // []),prev_sha256:$prev}' >> "$AUDIT"
+}
+reject() { echo "REJECTED $1: $5" >&2; audit "$@"; exit 1; }
+
+has_main=0; git rev-parse -q --verify refs/heads/main >/dev/null && has_main=1
+while read -r old new ref; do
+  [[ "$new" == "$ZERO" ]] && { [[ "$ref" == refs/heads/main ]] && reject "$ref" "$old" "$new" reject "deleting main is not allowed"; audit "$ref" "$old" "$new" accept "ref deleted"; continue; }
+
+  if [[ $has_main -eq 1 ]]; then
+    POLICY=(--policy-ref refs/heads/main)
+  elif [[ -f /srv/git/.bootstrap-token && "$ref" == refs/heads/main ]]; then
+    # First push only: policy comes from the bootstrap copy staged by setup-lab.sh.
+    POLICY=(--policy-dir /srv/git/.bootstrap-policy)
+  else
+    reject "$ref" "$old" "$new" reject "no protected main yet and no bootstrap token"
+  fi
+
+  if ! /opt/lab/scripts/gates/tier0-provenance.sh "${POLICY[@]}" -- "$new" --not --all >"$REPORT_DIR/tier0.log" 2>&1; then
+    cat "$REPORT_DIR/tier0.log" >&2
+    reject "$ref" "$old" "$new" reject "tier0: $(jq -r 'select(.decision=="reject")|.reason' "$REPORT_DIR"/tier0-signatures.jsonl | sort -u | paste -sd';' -)$( [[ -s $REPORT_DIR/gitleaks.json && $(jq length "$REPORT_DIR/gitleaks.json") -gt 0 ]] && echo '; secrets detected')"
+  fi
+  cat "$REPORT_DIR/tier0.log" >&2
+
+  if [[ "$ref" == refs/heads/main && $has_main -eq 1 ]]; then
+    git merge-base --is-ancestor "$old" "$new" || reject "$ref" "$old" "$new" reject "main is fast-forward only"
+    rec="$STATUS_DIR/$new.json"
+    [[ -f "$rec" && -f "$rec.asc" ]] || reject "$ref" "$old" "$new" reject "required status check missing: run 'sudo -u labci lab-ci <branch>' first"
+    GNUPGHOME="$(mktemp -d)"; export GNUPGHOME
+    gpg --batch --quiet --import /srv/git/ci-status/labci-public.asc 2>/dev/null
+    if ! gpg --batch --quiet --verify "$rec.asc" "$rec" 2>/dev/null; then
+      rm -rf "$GNUPGHOME"; reject "$ref" "$old" "$new" reject "CI status record signature invalid"
+    fi
+    rm -rf "$GNUPGHOME"; unset GNUPGHOME
+    [[ "$(jq -r .result "$rec")" == pass && "$(jq -r .commit "$rec")" == "$new" ]] \
+      || reject "$ref" "$old" "$new" reject "required status check is not 'pass' for $new"
+  fi
+  audit "$ref" "$old" "$new" accept "tier0 passed$( [[ $ref == refs/heads/main && $has_main -eq 1 ]] && echo '; CI pass record verified')$( [[ $has_main -eq 0 ]] && echo ' (bootstrap)')"
+  [[ "$ref" == refs/heads/main && -f /srv/git/.bootstrap-token ]] && rm -f /srv/git/.bootstrap-token
+done
+exit 0

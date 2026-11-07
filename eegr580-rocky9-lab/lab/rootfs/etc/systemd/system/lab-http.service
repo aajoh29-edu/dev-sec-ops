@@ -1,0 +1,17 @@
+[Unit]
+Description=EEGR 580 HTTP test server (static, unprivileged, sandboxed)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3.12 -m http.server 8080 --bind 0.0.0.0 --directory /srv/www
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

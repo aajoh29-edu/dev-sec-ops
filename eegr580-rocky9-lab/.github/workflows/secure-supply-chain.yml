@@ -1,0 +1,171 @@
+# Secure software supply chain — GitHub-hosted parity with the Rocky 9 lab container.
+# Same scripts (scripts/gates/*), same pinned toolchain (versions.env + install-scanners.sh).
+#
+# Every `uses:` is pinned to a full 40-character commit SHA. Placeholders of the form
+# @PIN_<NAME> are replaced by scripts/pin-actions.sh before the first run; the
+# workflow refuses to run while any placeholder remains (job `pin-check`).
+# No aquasecurity/trivy-action or setup-trivy: Trivy is installed by checksum.
+name: secure-supply-chain
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read            # default for every job; widened per job only where needed
+
+concurrency:
+  group: ssc-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REPORT_DIR: ${{ github.workspace }}/reports
+  SCANNERS: ${{ github.workspace }}/.scanners
+
+jobs:
+  pin-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@PIN_CHECKOUT # v5
+        with: { persist-credentials: false }
+      - name: Refuse unpinned actions
+        run: |
+          if grep -nE 'uses: [^ ]+@(PIN_|v[0-9]|main|master)' .github/workflows/*.yml; then
+            echo "::error::Unpinned action reference. Run scripts/pin-actions.sh."; exit 1; fi
+
+  tier0-provenance:
+    if: github.event_name == 'pull_request'
+    needs: pin-check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@PIN_CHECKOUT # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}   # the author's commits, not GitHub's merge commit
+      - name: Install Gitleaks (checksum-verified)
+        run: ./scripts/install-scanners.sh --prefix "$SCANNERS" --only gitleaks && echo "$SCANNERS/bin" >> "$GITHUB_PATH"
+      - name: Signatures, allow-list, secrets (policy from base branch)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/gates/tier0-provenance.sh --policy-ref "$BASE_SHA" -- "$BASE_SHA..$HEAD_SHA"
+      - if: always()
+        uses: actions/upload-artifact@PIN_UPLOAD_ARTIFACT # v4
+        with: { name: reports-tier0, path: reports/, retention-days: 30, if-no-files-found: ignore }
+
+  tier1-static:
+    needs: pin-check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write   # SARIF upload; read-only automatically for fork PRs
+    steps:
+      - uses: actions/checkout@PIN_CHECKOUT # v5
+        with: { persist-credentials: false }
+      - name: Install Semgrep + Checkov (pinned)
+        run: ./scripts/install-scanners.sh --prefix "$SCANNERS" --only semgrep,checkov && echo "$SCANNERS/bin" >> "$GITHUB_PATH"
+      - name: Tier 1 gate
+        run: ./scripts/gates/tier1-static.sh .
+      - name: Upload Semgrep SARIF
+        if: always() && hashFiles('reports/semgrep.sarif') != ''
+        uses: github/codeql-action/upload-sarif@PIN_CODEQL # v3
+        with: { sarif_file: reports/semgrep.sarif, category: semgrep }
+      - name: Upload Checkov SARIF
+        if: always() && hashFiles('reports/checkov/results_sarif.sarif') != ''
+        uses: github/codeql-action/upload-sarif@PIN_CODEQL # v3
+        with: { sarif_file: reports/checkov/results_sarif.sarif, category: checkov }
+      - if: always()
+        uses: actions/upload-artifact@PIN_UPLOAD_ARTIFACT # v4
+        with: { name: reports-tier1, path: reports/, retention-days: 30, if-no-files-found: ignore }
+
+  tier2-artifact:
+    needs: [tier1-static]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      id-token: write          # build provenance attestation (push to main only)
+      attestations: write
+    steps:
+      - uses: actions/checkout@PIN_CHECKOUT # v5
+        with: { persist-credentials: false }
+      - name: Install Trivy, Grype, Syft (checksum-verified)
+        run: ./scripts/install-scanners.sh --prefix "$SCANNERS" --only trivy,grype,syft && echo "$SCANNERS/bin" >> "$GITHUB_PATH"
+      - name: Build image.tar once, hash it, scan the same bytes twice
+        run: ./scripts/gates/tier2-artifact.sh app "eegr580/app:${GITHUB_SHA}"
+      - name: Upload Trivy SARIF
+        if: always() && hashFiles('reports/trivy.sarif') != ''
+        uses: github/codeql-action/upload-sarif@PIN_CODEQL # v3
+        with: { sarif_file: reports/trivy.sarif, category: trivy }
+      - name: Upload Grype SARIF
+        if: always() && hashFiles('reports/grype.sarif') != ''
+        uses: github/codeql-action/upload-sarif@PIN_CODEQL # v3
+        with: { sarif_file: reports/grype.sarif, category: grype }
+      - name: Attest build provenance for image.tar (SLSA provenance via GitHub attestations)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/attest-build-provenance@PIN_ATTEST # v2
+        with: { subject-path: reports/image.tar }
+      - if: always()
+        uses: actions/upload-artifact@PIN_UPLOAD_ARTIFACT # v4
+        with: { name: reports-tier2, path: reports/, retention-days: 30, if-no-files-found: ignore }
+
+  tier3-runtime:
+    needs: [tier2-artifact]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@PIN_CHECKOUT # v5
+        with: { persist-credentials: false }
+      - uses: actions/download-artifact@PIN_DOWNLOAD_ARTIFACT # v4
+        with: { name: reports-tier2, path: artifact }
+      - name: Verify image.tar hash, then load the exact scanned bytes
+        run: |
+          cd artifact && sha256sum -c image.tar.sha256
+          docker load -i image.tar
+      - name: ZAP baseline against the isolated container
+        run: ./scripts/gates/tier3-runtime.sh "eegr580/app:${GITHUB_SHA}"
+      - if: always()
+        uses: actions/upload-artifact@PIN_UPLOAD_ARTIFACT # v4
+        with: { name: reports-tier3, path: reports/, retention-days: 30, if-no-files-found: ignore }
+
+  evidence:
+    if: always() && needs.pin-check.result == 'success'
+    needs: [pin-check, tier0-provenance, tier1-static, tier2-artifact, tier3-runtime]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@PIN_CHECKOUT # v5
+        with: { fetch-depth: 0, persist-credentials: false }
+      - uses: actions/download-artifact@PIN_DOWNLOAD_ARTIFACT # v4
+        with: { pattern: reports-*, path: reports, merge-multiple: true }
+      - name: Evidence package (unsigned here; integrity from the attestation and artifact digests)
+        env: { RUN_ID: "gha-${{ github.run_id }}-${{ github.run_attempt }}" }
+        run: ./scripts/evidence/collect.sh --run-id "$RUN_ID" --no-sign --out "evidence/$RUN_ID"
+      - uses: actions/upload-artifact@PIN_UPLOAD_ARTIFACT # v4
+        with: { name: evidence, path: evidence/, retention-days: 90 }
+
+  defectdojo:
+    # Trusted context only: pushes to main, protected environment, never PR code with secrets.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEFECTDOJO_ENABLED == 'true'
+    needs: [evidence]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: defectdojo
+    steps:
+      - uses: actions/checkout@PIN_CHECKOUT # v5
+        with: { persist-credentials: false }
+      - uses: actions/download-artifact@PIN_DOWNLOAD_ARTIFACT # v4
+        with: { name: evidence, path: evidence }
+      - name: Reimport into DefectDojo
+        env:
+          DD_URL: ${{ vars.DD_URL }}
+          DD_API_KEY: ${{ secrets.DD_API_KEY }}
+        run: ./scripts/evidence/dojo-upload.sh "$(ls -d evidence/*/ | head -n1)"

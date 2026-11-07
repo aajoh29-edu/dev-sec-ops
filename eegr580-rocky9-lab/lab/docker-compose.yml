@@ -1,0 +1,81 @@
+# EEGR 580 — Rocky Linux 9 lab container (Docker Desktop, Windows 11, WSL2 backend)
+# Launch through run.ps1, which loads versions.env, builds your workstation image from
+# its pinned GitHub commit if needed, and creates the secret files.
+# Equivalent single command is printed by: .\lab\run.ps1 -ShowDockerRun
+
+name: eegr580
+
+services:
+  rocky9:
+    build:
+      context: ..
+      dockerfile: lab/Dockerfile
+      target: ${LAB_TARGET:-lab}                 # lab = your workstation + lab layer; standalone = from scratch
+      args:
+        ROCKY_IMAGE: ${ROCKY_IMAGE:?ROCKY_IMAGE missing - run lab/run.ps1}
+        WORKSTATION_IMAGE: ${WORKSTATION_IMAGE:-}
+        LAB_USER: ${LAB_USER:-dev}
+    image: eegr580/rocky9-lab:local
+    container_name: rocky9-lab
+    hostname: rocky9-lab
+
+    # --- systemd as PID 1 (lab mode only; never used for CI runners) -----------
+    privileged: true            # systemd cgroup writes, nested dockerd, chattr
+    cgroup: private             # --cgroupns=private : own cgroup v2 root
+    shm_size: 2g                # XFCE/browser under XRDP
+    stop_signal: SIGRTMIN+3     # systemd clean shutdown
+    stop_grace_period: 45s
+    init: false                 # systemd is the init
+    tmpfs:
+      - /run:rw,mode=0755
+      - /run/lock:rw,mode=1777
+      - /tmp:rw,mode=1777,exec
+
+    # --- Network: host side bound to loopback only ---------------------------
+    ports:
+      - "127.0.0.1:3390:3390"   # XRDP / XFCE
+      - "127.0.0.1:8080:8080"   # HTTP test server
+      - "127.0.0.1:5432:5432"   # PostgreSQL 16 (SCRAM-SHA-256)
+
+    # --- State: every mutable path lives on a named volume -------------------
+    volumes:
+      - rocky9-home:/home
+      - rocky9-gnupg:/home/${LAB_USER:-dev}/.gnupg   # lab identities; destroy with the volume
+      - rocky9-pgdata:/var/lib/pgsql
+      - rocky9-audit:/var/log/lab-audit
+      - rocky9-git:/srv/git                    # protected mock remote + CI status store
+      - rocky9-labci:/var/lib/labci            # pipeline identity (evidence-signing key)
+      - rocky9-docker:/var/lib/docker          # nested engine storage (overlay2 needs a real fs)
+      - rocky9-trivy-cache:/var/cache/scanners/trivy
+      - rocky9-grype-cache:/var/cache/scanners/grype
+      - type: bind                             # repo seed, read-only: container cannot write the host tree
+        source: ..
+        target: /workspace-src
+        read_only: true
+
+    secrets:
+      - source: lab_user_password
+        target: /etc/lab/secrets/lab_user_password
+      - source: pg_user_password
+        target: /etc/lab/secrets/pg_user_password
+
+    security_opt:
+      - label=disable
+    restart: unless-stopped
+
+secrets:
+  lab_user_password:
+    file: ./secrets/lab_user_password.txt     # created by run.ps1, ACL'd to the Windows user, git-ignored
+  pg_user_password:
+    file: ./secrets/pg_user_password.txt
+
+volumes:
+  rocky9-home:
+  rocky9-gnupg:
+  rocky9-pgdata:
+  rocky9-audit:
+  rocky9-git:
+  rocky9-labci:
+  rocky9-docker:
+  rocky9-trivy-cache:
+  rocky9-grype-cache:

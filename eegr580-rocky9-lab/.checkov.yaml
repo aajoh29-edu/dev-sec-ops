@@ -1,0 +1,12 @@
+# Tier 1 Checkov policy. lab/ is the privileged workstation image: it runs systemd
+# as root by design and is never released, so it is excluded from release gating
+# (documented exception; reviewed with the threat model).
+framework:
+  - dockerfile
+  - github_actions
+skip-path:
+  - lab
+  - reports
+  - evidence
+compact: true
+quiet: true

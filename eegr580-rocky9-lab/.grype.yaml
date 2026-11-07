@@ -1,0 +1,4 @@
+# Approved vulnerability exceptions (Grype). Keep in sync with .trivyignore.
+ignore: []
+#  - vulnerability: CVE-2099-0001
+#    reason: "risk acceptance RA-001, expires 2026-12-31"

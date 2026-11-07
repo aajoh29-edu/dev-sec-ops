@@ -1,0 +1,13 @@
+[Unit]
+Description=EEGR 580 first boot: credentials, PostgreSQL init, audit log
+ConditionPathExists=!/var/lib/pgsql/.lab-firstboot-done
+Before=postgresql.service xrdp.service lab-pg-bootstrap.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/lab/firstboot.sh
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=EEGR 580: create SCRAM-authenticated PostgreSQL role for the lab user
+Requires=postgresql.service
+After=postgresql.service lab-firstboot.service
+ConditionPathExists=!/var/lib/pgsql/.lab-pg-bootstrapped
+
+[Service]
+Type=oneshot
+User=postgres
+ExecStart=/usr/local/libexec/lab/pg-bootstrap.sh
+
+[Install]
+WantedBy=multi-user.target

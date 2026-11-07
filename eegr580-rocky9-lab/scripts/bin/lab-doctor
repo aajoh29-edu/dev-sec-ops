@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# lab-doctor — verify the DevSecOps lab layer inside the running container.
+# Checks every piece the lab needs on top of the workstation and prints PASS/FAIL.
+# Exit code = number of failures (0 = ready for setup-lab.sh).
+set -uo pipefail
+export PATH=/opt/scanners/bin:/opt/lab/scripts/bin:$PATH
+fails=0
+ok()  { printf '  \033[32mPASS\033[0m %s\n' "$*"; }
+bad() { printf '  \033[31mFAIL\033[0m %s\n' "$*"; fails=$((fails+1)); }
+chk() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi; }
+U="$(cat /etc/lab/lab-user 2>/dev/null || echo '?')"
+
+echo "== Platform"
+. /etc/os-release; [[ "$ID" == rocky && "${VERSION_ID%%.*}" == 9 ]] && ok "$PRETTY_NAME" || bad "not Rocky 9 ($PRETTY_NAME)"
+[[ "$(ps -p 1 -o comm=)" == systemd ]] && ok "systemd is PID 1" || bad "PID 1 is $(ps -p 1 -o comm=)"
+[[ "$(stat -fc %T /sys/fs/cgroup)" == cgroup2fs ]] && ok "cgroup v2" || bad "cgroup v1"
+st="$(systemctl is-system-running 2>/dev/null)"; [[ "$st" =~ ^(running|degraded)$ ]] && ok "systemd state: $st" || bad "systemd state: $st"
+
+echo "== Users"
+chk "lab user '$U' exists, in wheel/docker/lab-git" bash -c "id -nG '$U' | tr ' ' '\n' | grep -qx wheel && id -nG '$U' | tr ' ' '\n' | grep -qx docker && id -nG '$U' | tr ' ' '\n' | grep -qx lab-git"
+chk "pipeline user 'labci' exists, in docker" bash -c "id -nG labci | tr ' ' '\n' | grep -qx docker"
+chk "sudoers: $U may run lab-ci as labci" grep -q "^$U ALL=(labci) NOPASSWD: /opt/lab/scripts/bin/lab-ci$" /etc/sudoers.d/20-lab-ci
+chk "lab user password set from secret (not locked)" bash -c "getent shadow '$U' | cut -d: -f2 | grep -qv '^[!*]'"
+
+echo "== Services"
+for s in lab-firstboot lab-pg-bootstrap postgresql docker xrdp; do
+  chk "unit $s" bash -c "systemctl is-active --quiet $s || [[ \$(systemctl show -p Result --value $s) == success && \$(systemctl show -p Type --value $s) == oneshot ]]"
+done
+if systemctl is-enabled --quiet httpd 2>/dev/null; then chk "Apache active on :8080" bash -c "systemctl is-active --quiet httpd && ss -ltn | grep -q ':8080 '"
+else chk "lab-http active on :8080" bash -c "systemctl is-active --quiet lab-http && ss -ltn | grep -q ':8080 '"; fi
+chk "XRDP listening on :3390" bash -c "ss -ltn | grep -q ':3390 '"
+chk "PostgreSQL 16 listening on :5432" bash -c "ss -ltn | grep -q ':5432 ' && [[ \$(cat /var/lib/pgsql/data/PG_VERSION) == 16 ]]"
+chk "pg_hba: no trust or md5 rules" bash -c "! grep -Eq '^[^#].*[[:space:]](trust|md5|password)[[:space:]]*$' /var/lib/pgsql/data/pg_hba.conf"
+chk "PostgreSQL role '$U' stored as SCRAM-SHA-256" bash -c "runuser -u postgres -- psql -tAc \"SELECT rolpassword LIKE 'SCRAM-SHA-256%' FROM pg_authid WHERE rolname='$U'\" | grep -qx t"
+chk "nested Docker engine answers" docker info
+
+echo "== Pinned toolchain (versus /opt/lab/versions.env)"
+# shellcheck source=/dev/null
+source /opt/lab/versions.env
+ver() { "$@" 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1; }
+for pair in "gitleaks:$GITLEAKS_VERSION:gitleaks version" "trivy:$TRIVY_VERSION:trivy --version" \
+            "grype:$GRYPE_VERSION:grype version" "syft:$SYFT_VERSION:syft version" \
+            "semgrep:$SEMGREP_VERSION:semgrep --version" "checkov:$CHECKOV_VERSION:checkov --version"; do
+  IFS=: read -r name want cmd <<<"$pair"; got="$(ver $cmd)"
+  [[ -n "$got" && "$got" == "$want" ]] && ok "$name $got" || bad "$name: installed '${got:-none}', pinned '${want:-unset}'"
+done
+
+echo "== Lab scripts and hooks"
+for f in gates/tier0-provenance.sh gates/tier1-static.sh gates/tier2-artifact.sh gates/tier3-runtime.sh \
+         hooks/pre-commit hooks/pre-receive bin/lab-ci bin/audit-verify evidence/collect.sh evidence/verify.sh \
+         setup-lab.sh demo.sh; do
+  chk "/opt/lab/scripts/$f" test -x "/opt/lab/scripts/$f"
+done
+chk "scripts not writable by the lab user" bash -c "! runuser -u '$U' -- test -w /opt/lab/scripts/hooks/pre-receive"
+
+echo "== State, secrets, isolation"
+for m in /home /var/lib/pgsql /var/log/lab-audit /srv/git /var/lib/labci /var/lib/docker; do
+  chk "$m is a mounted volume" mountpoint -q "$m"
+done
+chk "audit log present (append-only where supported)" test -f /var/log/lab-audit/push.log
+chk "no private keys in image paths (TLS keys generated at boot excluded)" bash -c "! find /opt /etc /root -xdev -not -path '/etc/pki/*' \( -name '*.key' -o -name 'secring.*' -o -name 'private-keys-v1.d' \) 2>/dev/null | grep -q ."
+
+echo
+if [[ $fails -eq 0 ]]; then echo "lab-doctor: all checks passed — next: setup-lab.sh"; else echo "lab-doctor: $fails check(s) failed"; fi
+exit "$fails"

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# lab-ci — local stand-in for the GitHub Actions run, executed as the 'labci'
+# identity (the lab user may invoke it via sudo, but cannot write its outputs or read its key).
+#   sudo -u labci lab-ci <branch>
+# Clones the mock remote, runs Tiers 0–3 with policy from main, collects signed
+# evidence, and on success writes a signed CI pass record for the head commit.
+set -euo pipefail
+[[ "$(id -un)" == labci ]] || { echo "run as: sudo -u labci lab-ci <branch>" >&2; exit 2; }
+export HOME=/var/lib/labci GNUPGHOME=/var/lib/labci/.gnupg
+if [[ "${1:-}" == --init ]]; then   # one-time: pipeline evidence/status signing key
+  if ! gpg --batch --list-secret-keys ci@eegr580.lab >/dev/null 2>&1; then
+    gpg --batch --pinentry-mode loopback --passphrase '' \
+        --quick-generate-key "EEGR580 Lab CI (evidence signing) <ci@eegr580.lab>" ed25519 sign 90d
+  fi
+  gpg --armor --export ci@eegr580.lab > /srv/git/ci-status/labci-public.asc
+  echo "labci key: $(gpg --with-colons --list-keys ci@eegr580.lab | awk -F: '/^fpr/{print $10; exit}')"; exit 0
+fi
+BR="${1:?branch}"
+export PATH=/opt/scanners/bin:/opt/lab/scripts/bin:$PATH TRIVY_CACHE_DIR=/var/cache/scanners/trivy GRYPE_DB_CACHE_DIR=/var/cache/scanners/grype
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$BR"; RUN_ID="${RUN_ID//\//-}"
+W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
+git clone -q --branch "$BR" /srv/git/app.git "$W/src"; cd "$W/src"
+git fetch -q origin main:refs/remotes/origin/main
+HEAD_SHA="$(git rev-parse HEAD)"; export REPORT_DIR="$W/src/reports"; mkdir -p "$REPORT_DIR"
+G=/opt/lab/scripts/gates; result=pass; failed=()
+run() { local t=$1; shift; if "$@"; then :; else result=fail; failed+=("$t"); fi; }
+# All tiers run so the evidence is complete; any failure makes the result 'fail'.
+# (GitHub Actions stops at the first failed job via needs:, which is cheaper.)
+run tier0 "$G/tier0-provenance.sh" --policy-ref origin/main -- origin/main..HEAD
+run tier1 "$G/tier1-static.sh" .
+run tier2 "$G/tier2-artifact.sh" app "eegr580/app:$HEAD_SHA"
+if docker image inspect "eegr580/app:$HEAD_SHA" >/dev/null 2>&1; then
+  run tier3 "$G/tier3-runtime.sh" "eegr580/app:$HEAD_SHA"
+else result=fail; failed+=("tier3-not-run"); fi
+
+/opt/lab/scripts/evidence/collect.sh --run-id "$RUN_ID" --sign --out "/srv/git/ci-status/evidence/$RUN_ID"
+jq -n --arg commit "$HEAD_SHA" --arg branch "$BR" --arg result "$result" --arg run "$RUN_ID" \
+      --arg failed "${failed[*]:-}" --arg at "$(date -u +%FT%TZ)" \
+  '{commit:$commit,branch:$branch,result:$result,failed:($failed|split(" ")|map(select(.!=""))),run_id:$run,at:$at}' \
+  > "/srv/git/ci-status/$HEAD_SHA.json"
+gpg --batch --yes --armor --detach-sign -o "/srv/git/ci-status/$HEAD_SHA.json.asc" "/srv/git/ci-status/$HEAD_SHA.json"
+echo "lab-ci: $result for $HEAD_SHA (run $RUN_ID; evidence /srv/git/ci-status/evidence/$RUN_ID)"
+[[ $result == pass ]]

@@ -1,0 +1,43 @@
+# Recommended revision of YOUR Rocky 9 workstation Dockerfile (for its own GitHub repo).
+# Same packages and behaviour; three changes, each marked CHANGED:
+#   1. Base image pinned by digest (reproducible, matches versions.env ROCKY_IMAGE).
+#   2. initdb uses peer + SCRAM-SHA-256 instead of the default "trust" (any local
+#      user could log in as postgres without a password). The lab layer also
+#      enforces this at first boot, so this protects the workstation on its own too.
+#   3. getty.target masked (covers every tty, not only tty1).
+# Build:  docker build -t eegr580/rocky9-workstation:local .
+
+# CHANGED (1): pin the digest from versions.env ROCKY_IMAGE
+ARG ROCKY_IMAGE=rockylinux/rockylinux:9@sha256:<digest-from-versions.env>
+FROM ${ROCKY_IMAGE}
+
+# Init, admin tools and repositories
+RUN dnf -y update && dnf -y install systemd procps-ng iproute passwd sudo dnf-plugins-core which \
+ && dnf config-manager --set-enabled crb && dnf -y install epel-release && dnf clean all
+
+# XFCE desktop, fonts, XRDP and Firefox
+RUN dnf -y groupinstall "Xfce" && dnf -y install xorg-x11-xinit dbus-x11 xfce4-terminal \
+      dejavu-sans-fonts dejavu-sans-mono-fonts dejavu-serif-fonts glibc-langpack-en \
+      xrdp xorgxrdp tigervnc-server-minimal firefox && dnf clean all
+
+# Apache and PostgreSQL 16
+RUN dnf -y install httpd mod_ssl && dnf -y module reset postgresql \
+ && dnf -y module enable postgresql:16 && dnf -y install postgresql-server postgresql-contrib && dnf clean all
+
+# Desktop user and XFCE session for XRDP (no password in the image; set at first boot)
+RUN echo "xfce4-session" > /etc/skel/.Xclients && chmod 755 /etc/skel/.Xclients \
+ && useradd -m -s /bin/bash -G wheel aaron
+
+# Web test page and database cluster
+COPY index.html /var/www/html/index.html
+# CHANGED (2): no "trust" authentication
+RUN su - postgres -c "initdb -D /var/lib/pgsql/data --auth-local=peer --auth-host=scram-sha-256"
+
+# Start services at boot
+RUN systemctl enable xrdp xrdp-sesman httpd postgresql
+
+# CHANGED (3): no physical console in a container
+RUN systemctl mask getty.target console-getty.service
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

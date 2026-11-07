@@ -1,0 +1,24 @@
+# Build context is the repo root. Default-deny, then allow only what images need.
+*
+!versions.env
+!scripts/
+!lab/Dockerfile
+!lab/rootfs/
+!app/
+# Never send these, even if they appear under an allowed path
+**/.git
+**/.gnupg
+**/*.gpg
+**/*.asc.key
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+**/id_rsa*
+**/id_ed25519*
+**/.env
+**/*.env.local
+**/secrets/
+**/reports/
+**/evidence/
+**/*.tar

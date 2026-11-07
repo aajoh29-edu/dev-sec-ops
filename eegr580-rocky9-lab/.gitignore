@@ -1,0 +1,20 @@
+# Credentials and key material never enter Git history
+lab/secrets/
+.gnupg/
+*.gpg
+*.key
+*.pem
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+.env
+*.env.local
+!versions.env
+# Generated artifacts (published as CI artifacts, never committed)
+reports/
+evidence/
+*.tar
+*.sarif
+__pycache__/
+.venv/

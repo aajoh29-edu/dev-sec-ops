@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# audit-verify [log] — check the push audit log hash chain. Each entry stores the
+# SHA-256 of the previous line (line + newline; empty string for the first entry),
+# so editing, deleting or reordering any earlier line breaks every later link.
+set -euo pipefail
+LOG="${1:-/var/log/lab-audit/push.log}"; n=0; bad=0
+expect="$(printf '' | sha256sum | cut -d' ' -f1)"
+while IFS= read -r line; do
+  n=$((n+1))
+  got="$(jq -r .prev_sha256 <<<"$line")"
+  [[ "$got" == "$expect" ]] || { echo "BROKEN chain at line $n" >&2; bad=1; }
+  expect="$(printf '%s\n' "$line" | sha256sum | cut -d' ' -f1)"
+done < "$LOG"
+[[ $bad -eq 0 ]] && echo "audit-verify: $n entries, hash chain intact" || exit 1

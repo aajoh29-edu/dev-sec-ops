@@ -1,0 +1,4 @@
+# Approved vulnerability exceptions (Trivy). One ID per line with an expiry, e.g.
+# CVE-2099-0001 exp:2026-12-31
+# Each entry needs a matching DefectDojo risk acceptance (owner, rationale,
+# compensating control, approver, expiry). Expired entries stop suppressing.

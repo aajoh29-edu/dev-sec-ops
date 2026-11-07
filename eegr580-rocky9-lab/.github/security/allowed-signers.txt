@@ -1,0 +1,4 @@
+# Allow-listed commit signers — PRIMARY key fingerprint (40 hex), email, note.
+# Changes require review by a security CODEOWNER; the gate reads this file from main.
+# setup-lab.sh replaces the placeholder below with the lab identity.
+# 0000000000000000000000000000000000000000 aaron@eegr580.lab Aaron (lab identity)

@@ -1,0 +1,9 @@
+# Policy and pipeline definitions need security review.
+/.github/            @security-reviewers
+/.semgrep/           @security-reviewers
+/.gitleaks.toml      @security-reviewers
+/.checkov.yaml       @security-reviewers
+/.trivyignore        @security-reviewers
+/.grype.yaml         @security-reviewers
+/.zap/               @security-reviewers
+/versions.env        @security-reviewers
