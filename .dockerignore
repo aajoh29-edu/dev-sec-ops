@@ -19,6 +19,6 @@
 **/.env
 **/*.env.local
 **/secrets/
-**/reports/
-**/evidence/
+reports/
+evidence/
 **/*.tar
