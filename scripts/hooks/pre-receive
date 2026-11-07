@@ -38,7 +38,12 @@ while read -r old new ref; do
 
   if ! /opt/lab/scripts/gates/tier0-provenance.sh "${POLICY[@]}" -- "$new" --not --all >"$REPORT_DIR/tier0.log" 2>&1; then
     cat "$REPORT_DIR/tier0.log" >&2
-    reject "$ref" "$old" "$new" reject "tier0: $(jq -r 'select(.decision=="reject")|.reason' "$REPORT_DIR"/tier0-signatures.jsonl | sort -u | paste -sd';' -)$( [[ -s $REPORT_DIR/gitleaks.json && $(jq length "$REPORT_DIR/gitleaks.json") -gt 0 ]] && echo '; secrets detected')"
+    reasons=()
+    while IFS= read -r r; do [[ -n "$r" ]] && reasons+=("$r"); done \
+      < <(jq -r 'select(.decision=="reject")|.reason' "$REPORT_DIR"/tier0-signatures.jsonl 2>/dev/null | sort -u)
+    [[ -s "$REPORT_DIR/gitleaks.json" && "$(jq length "$REPORT_DIR/gitleaks.json")" -gt 0 ]] && reasons+=("secrets detected")
+    [[ ${#reasons[@]} -gt 0 ]] || reasons+=("gate error (see output above)")
+    reject "$ref" "$old" "$new" reject "tier0: $(IFS=';'; echo "${reasons[*]}" | sed 's/;/; /g')"
   fi
   cat "$REPORT_DIR/tier0.log" >&2
 

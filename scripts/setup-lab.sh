@@ -32,41 +32,53 @@ echo "Your personal key stays on Windows (Gpg4win / hardware token). Do not impo
 say "2. Pipeline identity (labci) key"
 sudo -u labci /opt/lab/scripts/bin/lab-ci --init
 
-say "3. Protected mock remote (needs sudo once: hooks and config become root-owned)"
-if [[ ! -d "$REMOTE" ]]; then
-  git init -q --bare --shared=group -b main "$REMOTE"
-  git -C "$REMOTE" config receive.fsckObjects true   # ff-only and no-delete on main are enforced by pre-receive
-  sudo chgrp -R lab-git "$REMOTE"
+say "3. Protected mock remote (sudo: hooks and config become root-owned)"
+# Every sub-step checks its own result, so a run interrupted half-way can simply be re-run.
+[[ -d "$REMOTE" ]] || git init -q --bare --shared=group -b main "$REMOTE"
+if [[ -O "$REMOTE/config" ]]; then   # still ours => hardening not applied yet
+  git -C "$REMOTE" config receive.fsckObjects true   # ff-only/no-delete on main: enforced by pre-receive
+fi
+sudo chgrp -R lab-git "$REMOTE"
+if [[ "$(stat -c %U "$REMOTE/hooks")" != root || ! -L "$REMOTE/hooks/pre-receive" ]]; then
   sudo rm -rf "$REMOTE/hooks" && sudo install -d -o root -g root -m 0755 "$REMOTE/hooks"
   sudo ln -s /opt/lab/scripts/hooks/pre-receive "$REMOTE/hooks/pre-receive"
-  sudo chown root:root "$REMOTE/config" && sudo chmod 0644 "$REMOTE/config"
 fi
+sudo chown root:root "$REMOTE/config" && sudo chmod 0644 "$REMOTE/config"
+echo "remote: $REMOTE (pre-receive -> $(readlink "$REMOTE/hooks/pre-receive"))"
 
 say "4. Workspace and signed bootstrap commit"
-if [[ ! -d "$WS/.git" ]]; then
-  mkdir -p "$WS"
-  rsync -a --exclude .git --exclude 'lab/secrets/' --exclude reports --exclude evidence "$SRC/" "$WS/"
-  cd "$WS"
-  git init -q -b main
-  git config user.name "$GIT_NAME"; git config user.email "$LAB_EMAIL"
-  git config user.signingkey "$TRUSTED_FPR"; git config commit.gpgsign true
-  git config gpg.format openpgp; git config gpg.program gpg; git config core.hooksPath /opt/lab/scripts/hooks
+mkdir -p "$WS"
+[[ -d "$WS/.git" ]] || git -C "$WS" init -q -b main
+if ! git -C "$WS" rev-parse -q --verify HEAD >/dev/null; then
+  # No first commit yet (fresh, or an earlier run stopped): (re)copy the project from the repo mount.
+  rsync -a --exclude .git --exclude 'lab/secrets/' --exclude /reports --exclude /evidence "$SRC/" "$WS/"
+fi
+cd "$WS"
+git config user.name "$GIT_NAME"; git config user.email "$LAB_EMAIL"
+git config user.signingkey "$TRUSTED_FPR"; git config commit.gpgsign true
+git config gpg.format openpgp; git config gpg.program gpg; git config core.hooksPath /opt/lab/scripts/hooks
+git remote get-url origin >/dev/null 2>&1 || git remote add origin "$REMOTE"
+
+if ! git rev-parse -q --verify HEAD >/dev/null; then
   # Keyring of KNOWN contributors (both); authorisation is the allow-list (trusted only).
   gpg --armor --export "$TRUSTED_FPR" "$ROGUE_FPR" > .github/security/trusted-signers.asc
   { echo "# Allow-listed commit signers — PRIMARY fingerprint, email, note. Reviewed by CODEOWNERS."
     echo "$TRUSTED_FPR $LAB_EMAIL $GIT_NAME (lab identity, expires in 30 days)"; } \
     > .github/security/allowed-signers.txt
-  # Bootstrap policy for the very first push (main does not exist yet).
-  sudo install -d -o root -g lab-git -m 0755 /srv/git/.bootstrap-policy/.github/security
-  sudo install -m 0644 .github/security/trusted-signers.asc .github/security/allowed-signers.txt \
-       /srv/git/.bootstrap-policy/.github/security/
-  sudo install -m 0644 .gitleaks.toml /srv/git/.bootstrap-policy/.gitleaks.toml
-  sudo install -m 0644 /dev/null /srv/git/.bootstrap-token
   git add -A
   git commit -q -S -m "chore: bootstrap lab repository and signing policy"
-  git remote add origin "$REMOTE"
+fi
+
+if ! git -C "$REMOTE" rev-parse -q --verify refs/heads/main >/dev/null; then
+  # First push only: main does not exist yet, so stage a one-time policy from the commit itself.
+  sudo install -d -o root -g lab-git -m 0755 /srv/git/.bootstrap-policy/.github/security
+  git show HEAD:.github/security/trusted-signers.asc | sudo tee /srv/git/.bootstrap-policy/.github/security/trusted-signers.asc >/dev/null
+  git show HEAD:.github/security/allowed-signers.txt | sudo tee /srv/git/.bootstrap-policy/.github/security/allowed-signers.txt >/dev/null
+  git show HEAD:.gitleaks.toml | sudo tee /srv/git/.bootstrap-policy/.gitleaks.toml >/dev/null
+  sudo chmod -R a+rX /srv/git/.bootstrap-policy
+  sudo install -m 0644 /dev/null /srv/git/.bootstrap-token
   git push -q origin main
-  sudo rm -rf /srv/git/.bootstrap-policy
+  sudo rm -rf /srv/git/.bootstrap-policy /srv/git/.bootstrap-token
 fi
 cd "$WS"; git log --show-signature -1 --format='%H %s' | sed 's/^/  /'
 audit-verify

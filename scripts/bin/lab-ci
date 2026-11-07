@@ -18,6 +18,10 @@ fi
 BR="${1:?branch}"
 export PATH=/opt/scanners/bin:/opt/lab/scripts/bin:$PATH TRIVY_CACHE_DIR=/var/cache/scanners/trivy GRYPE_DB_CACHE_DIR=/var/cache/scanners/grype
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$BR"; RUN_ID="${RUN_ID//\//-}"
+# The mock remote is owned by the lab user; Git refuses "dubious ownership" across users.
+# Trust exactly that one path in labci's global config (on the rocky9-labci volume).
+git config --global --get-all safe.directory 2>/dev/null | grep -qx /srv/git/app.git \
+  || git config --global --add safe.directory /srv/git/app.git
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 git clone -q --branch "$BR" /srv/git/app.git "$W/src"; cd "$W/src"
 git fetch -q origin main:refs/remotes/origin/main

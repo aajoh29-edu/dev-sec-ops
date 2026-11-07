@@ -35,7 +35,7 @@ USER root
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV container=docker \
     LANG=C.UTF-8 \
-    PATH=/opt/scanners/bin:/opt/lab/scripts/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+    PATH=/opt/scanners/bin:/opt/lab/scripts/bin:/opt/lab/scripts:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 COPY scripts/provision-lab-layer.sh /opt/lab/provision-lab-layer.sh
 RUN LAB_USER="${LAB_USER}" /opt/lab/provision-lab-layer.sh
 COPY --from=toolchain /opt/scanners /opt/scanners
@@ -63,7 +63,7 @@ ARG LAB_USER
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ENV container=docker \
     LANG=C.UTF-8 \
-    PATH=/opt/scanners/bin:/opt/lab/scripts/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+    PATH=/opt/scanners/bin:/opt/lab/scripts/bin:/opt/lab/scripts:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 COPY scripts/provision-rocky9.sh /opt/lab/provision-rocky9.sh
 RUN LAB_USER="${LAB_USER}" /opt/lab/provision-rocky9.sh
 COPY --from=toolchain /opt/scanners /opt/scanners
