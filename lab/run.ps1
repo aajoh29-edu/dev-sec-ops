@@ -36,7 +36,8 @@ if (-not $env:LAB_TARGET) { $env:LAB_TARGET = 'lab' }
 function Build-Workstation {
   $ctx = $env:WORKSTATION_GIT_CONTEXT
   if (-not $ctx) { throw "Image '$($env:WORKSTATION_IMAGE)' not found and WORKSTATION_GIT_CONTEXT is empty in versions.env." }
-  $buildArgs = @('build', '-t', $env:WORKSTATION_IMAGE, '--label', "org.opencontainers.image.source=$ctx")
+    $buildArgs = @('build', '-t', $env:WORKSTATION_IMAGE, '--build-arg', "ROCKY_IMAGE=$($env:ROCKY_IMAGE)",
+                 '--label', "org.opencontainers.image.source=$ctx")
   if ($ctx -match '^https://') {
     if ($ctx -notmatch '\.git#[0-9a-f]{40}(:|$)') { throw 'WORKSTATION_GIT_CONTEXT must pin a full 40-character commit SHA: https://github.com/<user>/<repo>.git#<sha>:<dir>' }
     if ($env:GIT_AUTH_TOKEN) { $buildArgs += @('--secret', 'id=GIT_AUTH_TOKEN,env=GIT_AUTH_TOKEN') }  # private repo
