@@ -4,13 +4,10 @@
 set -euo pipefail
 S=/etc/lab/secrets
 U="$(cat /etc/lab/lab-user)"; H="$(getent passwd "$U" | cut -d: -f6)"
-for f in lab_user_password pg_user_password; do
-  [[ -s "$S/$f" ]] || { echo "missing secret $S/$f (run.ps1 creates it)" >&2; exit 1; }
-done
+[[ -s "$S/pg_user_password" ]] || { echo "missing secret $S/pg_user_password (run.ps1 creates it)" >&2; exit 1; }
 
-# Lab user: password only for sudo and XRDP login.
-printf '%s:%s\n' "$U" "$(tr -d '\r\n' < "$S/lab_user_password")" | chpasswd
-passwd -u "$U" >/dev/null
+# Lab user password is applied on every boot by lab-credentials.service (/etc/shadow is
+# not on a volume). Home and key directories live on volumes, so set them up once here.
 chown "$U:$U" "$H" && chmod 0700 "$H"
 install -d -m 0700 -o "$U" -g "$U" "$H/.gnupg"
 chown -R "$U:$U" "$H/.gnupg"

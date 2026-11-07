@@ -23,7 +23,7 @@ chk "sudoers: $U may run lab-ci as labci" grep -q "^$U ALL=(labci) NOPASSWD: /op
 chk "lab user password set from secret (not locked)" bash -c "getent shadow '$U' | cut -d: -f2 | grep -qv '^[!*]'"
 
 echo "== Services"
-for s in lab-firstboot lab-pg-bootstrap postgresql docker xrdp; do
+for s in lab-credentials lab-firstboot lab-pg-bootstrap postgresql docker xrdp; do
   chk "unit $s" bash -c "systemctl is-active --quiet $s || [[ \$(systemctl show -p Result --value $s) == success && \$(systemctl show -p Type --value $s) == oneshot ]]"
 done
 if systemctl is-enabled --quiet httpd 2>/dev/null; then chk "Apache active on :8080" bash -c "systemctl is-active --quiet httpd && ss -ltn | grep -q ':8080 '"

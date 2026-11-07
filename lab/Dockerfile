@@ -45,7 +45,7 @@ COPY scripts/ /opt/lab/scripts/
 RUN chmod -R a+rX,go-w /opt/lab \
  && find /opt/lab/scripts -name '*.sh' -exec chmod 0755 {} + \
  && chmod 0755 /opt/lab/scripts/bin/* /opt/lab/scripts/hooks/* /usr/local/libexec/lab/*.sh \
- && systemctl enable lab-firstboot.service lab-pg-bootstrap.service \
+ && systemctl enable lab-credentials.service lab-firstboot.service lab-pg-bootstrap.service \
         postgresql.service docker.service xrdp.service \
  && if rpm -q httpd >/dev/null; then systemctl enable httpd.service; else systemctl enable lab-http.service; fi
 LABEL org.opencontainers.image.title="eegr580-rocky9-lab" \
@@ -73,7 +73,7 @@ COPY scripts/ /opt/lab/scripts/
 RUN chmod -R a+rX,go-w /opt/lab \
  && find /opt/lab/scripts -name '*.sh' -exec chmod 0755 {} + \
  && chmod 0755 /opt/lab/scripts/bin/* /opt/lab/scripts/hooks/* /usr/local/libexec/lab/*.sh \
- && systemctl enable lab-firstboot.service lab-pg-bootstrap.service \
+ && systemctl enable lab-credentials.service lab-firstboot.service lab-pg-bootstrap.service \
         postgresql.service docker.service xrdp.service lab-http.service
 STOPSIGNAL SIGRTMIN+3
 EXPOSE 3390 8080 5432
