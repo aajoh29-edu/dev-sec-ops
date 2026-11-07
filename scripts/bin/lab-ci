@@ -7,6 +7,7 @@
 set -euo pipefail
 [[ "$(id -un)" == labci ]] || { echo "run as: sudo -u labci lab-ci <branch>" >&2; exit 2; }
 export HOME=/var/lib/labci GNUPGHOME=/var/lib/labci/.gnupg
+cd "$HOME"   # callers start in their private home (0700); labci cannot stat it
 if [[ "${1:-}" == --init ]]; then   # one-time: pipeline evidence/status signing key
   if ! gpg --batch --list-secret-keys ci@eegr580.lab >/dev/null 2>&1; then
     gpg --batch --pinentry-mode loopback --passphrase '' \
